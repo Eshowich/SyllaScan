@@ -6,12 +6,13 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { useToast } from "@/components/ui/use-toast"
 import { useAuth } from "@/hooks/use-auth"
-import { supabase, testSupabaseConnection, ensureBucketExists, ensureAuthenticated } from "@/lib/supabase"
+import { supabase, testSupabaseConnection, ensureAuthenticated, ensureSyllabiBucket } from "@/lib/supabase"
 import { DatePreferences } from "./date-preferences"
 import { processDocument } from "@/lib/ai-service"
 import { ExtractedEventsReview } from "./extracted-events-review"
 import { ExtractedEvent } from "@/lib/types"
 import { createSecondaryCalendar, addEventsToCalendar, checkCalendarAccess, requestCalendarAccess } from "@/lib/calendar-service"
+import { documentProcessor } from "@/lib/document-processor"
 
 export function SyllabusUploader() {
   const [isUploading, setIsUploading] = useState(false)
@@ -107,175 +108,189 @@ export function SyllabusUploader() {
     setStep("processing")
 
     try {
-      // First check authentication status
+      // First check authentication status and ensure we have a valid session
+      console.log("Starting authentication check...");
       const authStatus = await ensureAuthenticated()
+      
       if (!authStatus.authenticated) {
         console.error("Authentication check failed:", authStatus.error)
         throw new Error("Your session has expired. Please sign in again.")
       }
       
-      if (authStatus.refreshed) {
-        console.log("Authentication token was refreshed automatically")
+      // Get the current session to ensure we have access token
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      
+      if (sessionError || !session || !session.access_token) {
+        console.error("Session error:", sessionError || "No valid session or access token")
+        throw new Error("Authentication error. Please sign out and sign in again.")
       }
       
-      // Now test Supabase connection
-      const connectionTest = await testSupabaseConnection()
-      console.log("Connection test result:", connectionTest)
-      
-      if (!connectionTest.success) {
-        throw new Error(`Supabase connection failed: ${connectionTest.message || 'Unknown error'}`)
-      }
+      console.log("Authentication check passed with valid access token");
+      setProgress(20)
 
-      // Check for calendar access
-      const hasAccess = await checkGCalAccess()
-      if (!hasAccess) {
-        // We'll continue with the upload but note that we need to request access later
+      // Prepare file for upload
+      const file = files[0];
+      if (!file) {
+        throw new Error('No file selected for upload');
       }
-
-      // Ensure the bucket exists before uploading
-      const bucketResult = await ensureBucketExists('syllabi')
-      console.log("Bucket check result:", bucketResult)
       
-      if (!bucketResult.success) {
-        // Only throw an error if this isn't a temporary issue or we have details
-        if (bucketResult.error) {
-          throw new Error(`Failed to access storage: ${bucketResult.message || 'Unknown error'}`)
+      console.log(`Preparing to upload file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+      
+      // Generate a unique filename
+      const fileExt = file.name.split('.').pop() || 'pdf';
+      const fileName = `${Math.random().toString(36).substring(2, 15)}_${Date.now()}.${fileExt}`.toLowerCase();
+      const filePath = `user_${user.id}/${fileName}`;
+      
+      console.log(`Generated file path: ${filePath}`);
+      setProgress(30);
+      
+      // Upload the file to Supabase storage with explicit headers
+      console.log(`Uploading file to Supabase storage...`);
+      const { data: storageData, error: storageError } = await supabase
+        .storage
+        .from('syllabi')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: true
+        });
+
+      if (storageError) {
+        console.error("Storage error details:", storageError)
+        console.error("Storage error JSON:", JSON.stringify(storageError, null, 2))
+        console.error("Storage error message:", storageError?.message)
+        console.error("Storage error type:", typeof storageError)
+        
+        // Check if it's an auth error and provide helpful message
+        if (storageError.message?.includes('authorization') || storageError.message?.includes('401')) {
+          throw new Error("Authentication error. Please sign out and sign in again, then try uploading.")
         }
+        
+        throw new Error(`Upload failed: ${storageError.message || 'Unknown storage error'}`)
       }
 
-      // Upload file to Supabase Storage
-      const file = files[0] // For simplicity, process one file at a time
-      const fileExt = file.name.split('.').pop()
-      const fileName = `${Math.random().toString(36).substring(2, 15)}_${Date.now()}.${fileExt}`
+      if (!storageData) {
+        throw new Error("No data returned from storage upload")
+      }
+
+      console.log("Upload successful:", storageData)
+      setProgress(50)
+
+      // Store syllabus metadata in database
+      const syllabusData = {
+        file_name: file.name,
+        file_path: filePath,
+        title: file.name.replace(/\.[^/.]+$/, ""), // Remove file extension
+        course_code: file.name.match(/[A-Z]+\d+/)?.[0] || null,
+        course_name: file.name.replace(/\.[^/.]+$/, "").replace(/[A-Z]+\d+/, "").trim() || null,
+        instructor_name: "Dr. Sample Professor",
+        status: 'processing'
+      };
+
+      console.log("Storing syllabus data:", syllabusData);
+      const { data: syllabusRecord, error: dbError } = await supabase
+        .from('syllabi')
+        .insert([{
+          user_id: user.id,
+          ...syllabusData
+        }])
+        .select()
+        .single();
+
+      if (dbError) {
+        console.error("Database error:", dbError);
+        throw new Error(`Database error: ${dbError.message}`);
+      }
+
+      console.log("Syllabus record created:", syllabusRecord);
+      setSyllabusId(syllabusRecord.id);
+      setProgress(50)
       
-      // Simplify the file path to just use the file name directly in the root of the bucket
-      // This avoids permissions issues with nested folders
-      const filePath = fileName
-
-      setProgress(20) // Update progress
-
-      // Try to upload directly without bucket creation check
+      // Process document with AI to extract real events
+      console.log("🤖 Starting AI document processing...");
+      setProgress(60)
+      
       try {
-        console.log("Starting file upload for:", filePath)
+        const { text, events } = await documentProcessor.processDocument(file);
         
-        // First make absolutely sure we're authenticated
-        const authCheck = await ensureAuthenticated()
-        if (!authCheck.authenticated) {
-          console.error("Authentication required for upload. Auth status:", authCheck)
-          throw new Error("You need to be logged in to upload files. Please sign in again.")
-        }
-        
-        console.log(`Auth check passed, user authenticated with session ID: ${authCheck.session?.id.slice(0, 8)}...`)
-        
-        // Upload with detailed logging
-        console.log(`Uploading file to path: syllabi/${filePath}`)
-        
-        // Try to use a simpler upload approach that's less error-prone
-        const { data: storageData, error: storageError } = await supabase.storage
-          .from('syllabi')
-          .upload(filePath, file, {
-            cacheControl: '3600',
-            upsert: true
-          })
-
-        // Log the complete error for debugging
-        if (storageError) {
-          console.error("Storage error details:", storageError)
-          console.error("Storage error JSON:", JSON.stringify(storageError, null, 2))
-          
-          // Check auth-related errors specifically
-          if (storageError.statusCode === 401) {
-            console.error("Authentication error for storage. Current auth session:")
-            const { data } = await supabase.auth.getSession()
-            console.error("Session exists:", !!data?.session)
-            console.error("Session expires at:", data?.session?.expires_at ? new Date(data.session.expires_at * 1000).toISOString() : 'N/A')
-            
-            // Try one more refresh
-            console.log("Trying to refresh session...")
-            const refreshResult = await supabase.auth.refreshSession()
-            console.log("Refresh result:", refreshResult.error ? 'Failed' : 'Success')
-            
-            throw new Error("Authentication error: Your session may have expired. Please try signing out and in again.")
-          }
-          
-          // Provide user-friendly error messages
-          if (storageError.message?.includes("storage/permission_denied")) {
-            throw new Error("You don't have permission to upload files. Make sure the storage bucket has proper RLS policies.")
-          } else if (storageError.message?.includes("not_found") || storageError.statusCode === 404) {
-            throw new Error("Storage bucket not found. Please create the 'syllabi' bucket in your Supabase project.")
-          } else if (storageError.statusCode === 403 || storageError.message?.includes("forbidden")) {
-            throw new Error("Access denied. Make sure you're signed in and have proper access to the bucket.")
-          } else {
-            throw new Error(`Upload failed: ${storageError.message || 'Unknown storage error'}`)
-          }
-        }
-
-        if (!storageData) {
-          throw new Error("No data returned from storage upload")
-        }
-
-        console.log("Upload successful:", storageData)
-        setProgress(40) // Update progress
-
-        // Mock AI processing since we can't access the API
-        // In a production app, this would call the AI service
-        setProgress(60)
-        
-        // For demo purposes, create sample events
-        const sampleEvents = [
-          {
-            id: `event-${Date.now()}-1`,
-            title: "Midterm Exam",
-            date: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
-            description: "Midterm examination",
-            eventType: 'exam',
-            confidence: 0.9
-          },
-          {
-            id: `event-${Date.now()}-2`,
-            title: "Assignment Due",
-            date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-            description: "Assignment 1 submission deadline",
-            eventType: 'homework',
-            confidence: 0.8
-          },
-          {
-            id: `event-${Date.now()}-3`,
-            title: "Lecture: Introduction",
-            date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-            description: "Introduction to key concepts",
-            eventType: 'lecture',
-            confidence: 0.95
-          }
-        ]
+        console.log(`📄 Extracted ${text.length} characters of text`);
+        console.log(`🎯 Found ${events.length} events`);
         
         setProgress(80)
         
-        // Store the filtered events and course info
-        const courseNameFromFile = file.name.replace(/\.[^/.]+$/, "")
-        setExtractedEvents(sampleEvents)
+        // Store real extracted events in database
+        if (events.length > 0) {
+          const eventsToInsert = events.map(event => ({
+            syllabus_id: syllabusRecord.id,
+            title: event.title,
+            description: event.description,
+            event_date: event.date,
+            event_type: event.eventType,
+            confidence: event.confidence
+          }));
+
+          const { error: eventsError } = await supabase
+            .from('events')
+            .insert(eventsToInsert);
+
+          if (eventsError) {
+            console.error("Error storing events:", eventsError);
+            // Don't fail the whole process for events error
+          } else {
+            console.log("✅ Real events stored successfully");
+          }
+        }
+        
+        // Update syllabus status to processed
+        await supabase
+          .from('syllabi')
+          .update({ 
+            status: 'processed',
+            processed_at: new Date().toISOString()
+          })
+          .eq('id', syllabusRecord.id);
+          
+        setExtractedEvents(events)
         setCourseInfo({
-          courseName: courseNameFromFile,
-          courseCode: courseNameFromFile.match(/[A-Z]+\d+/)?.[0] || undefined
+          courseName: syllabusData.course_name || syllabusData.title,
+          courseCode: syllabusData.course_code || undefined,
+          instructorName: syllabusData.instructor_name
         })
         
-        // Move to the review step
-        setStep("review")
-
-        // Reset progress after processing
         setProgress(100)
-        setTimeout(() => {
-          setProgress(0)
-        }, 1000)
-      } catch (error) {
-        console.error("Error uploading file:", error)
-        toast({
-          title: "Upload failed",
-          description: error instanceof Error ? error.message : "There was a problem uploading your file",
-          variant: "destructive",
+        
+      } catch (aiError) {
+        console.error("AI processing failed, using fallback:", aiError);
+        
+        // Fallback to basic sample events if AI fails completely
+        const fallbackEvents: ExtractedEvent[] = [
+          {
+            id: `fallback-${Date.now()}-1`,
+            title: "Review Uploaded Syllabus",
+            date: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+            description: "Please review the uploaded syllabus and manually add important dates",
+            eventType: 'other',
+            confidence: 0.5
+          }
+        ];
+        
+        setExtractedEvents(fallbackEvents);
+        setCourseInfo({
+          courseName: syllabusData.course_name || syllabusData.title,
+          courseCode: syllabusData.course_code || undefined,
+          instructorName: syllabusData.instructor_name
         })
-        setStep("upload")
+        
+        setProgress(100)
       }
+      
+      // Move to the review step
+      setStep("review")
+      
+      // Reset progress after a short delay
+      setTimeout(() => {
+        setProgress(0)
+      }, 1000)
+
     } catch (error) {
       console.error("Error in upload process:", error)
       toast({

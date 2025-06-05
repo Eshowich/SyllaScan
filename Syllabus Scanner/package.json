@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "migrate": "ts-node --project tsconfig.migrate.json scripts/apply-migrations.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "latest",
@@ -46,6 +47,7 @@
     "clsx": "^2.1.1",
     "cmdk": "latest",
     "date-fns": "4.1.0",
+    "dotenv": "^16.5.0",
     "embla-carousel-react": "8.5.1",
     "framer-motion": "latest",
     "googleapis": "latest",
@@ -63,6 +65,7 @@
     "sonner": "^1.7.1",
     "tailwind-merge": "^2.5.5",
     "tailwindcss-animate": "^1.0.7",
+    "ts-node": "^10.9.2",
     "vaul": "^0.9.6",
     "zod": "^3.24.1"
   },

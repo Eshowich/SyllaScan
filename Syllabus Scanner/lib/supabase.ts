@@ -1,5 +1,17 @@
 import { createClient } from '@supabase/supabase-js';
 
+// Define a custom type for StorageError since it's not exported from the package
+type StorageError = Error & {
+  statusCode?: number;
+  error?: string;
+  message: string;
+};
+
+type StorageApiResponse = {
+  data: any;
+  error: StorageError | null;
+};
+
 // Detailed debug function for environment variables
 const debugEnvironmentVariables = () => {
   // Check if we're in browser or server environment
@@ -38,95 +50,13 @@ const envStatus = debugEnvironmentVariables();
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder-url.supabase.co';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key';
 
-// Create client with detailed error handling and CORS support
+// Create client with simple, working configuration
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
     storageKey: 'supabase-auth',
-  },
-  global: {
-    fetch: (url, options) => {
-      console.log(`Supabase API request to: ${url.toString().split('?')[0]}`);
-      
-      // Create a clean options object with headers
-      const fetchOptions = {
-        ...options,
-        headers: {
-          ...options?.headers,
-          'x-client-info': 'supabase-js/2.0.0',
-          'apikey': supabaseAnonKey, // Add the API key as a header
-        },
-      };
-
-      console.log('Fetch options:', {
-        url: url.toString(),
-        method: fetchOptions.method || 'GET',
-        headers: fetchOptions.headers,
-      });
-
-      return fetch(url, fetchOptions).then(async response => {
-        if (!response.ok) {
-          // Don't log 401/403 errors for auth endpoints as these are expected during normal operation
-          const isAuthEndpoint = url.toString().includes('/auth/');
-          const isAuthError = response.status === 401 || response.status === 403;
-          
-          // Get the response text for better error messages
-          let errorBody = '';
-          try {
-            errorBody = await response.text();
-            try {
-              // Try to parse as JSON if possible
-              errorBody = JSON.parse(errorBody);
-            } catch (e) {
-              // Not JSON, keep as text
-            }
-          } catch (e) {
-            console.error('Error reading error response:', e);
-          }
-          
-          if (!(isAuthEndpoint && isAuthError)) {
-            console.error('Supabase API error:', {
-              status: response.status,
-              statusText: response.statusText,
-              url: url.toString(),
-              method: fetchOptions.method || 'GET',
-              error: errorBody,
-            });
-            
-            // Add enhanced error debugging for auth errors
-            if (response.status === 401) {
-              console.error('Authentication error details:');
-              console.error('- Request URL:', url.toString().split('?')[0]);
-              console.error('- Is auth endpoint:', isAuthEndpoint);
-              
-              // Clone the response for detailed inspection
-              response.clone().text().then(text => {
-                try {
-                  const errorBody = JSON.parse(text);
-                  console.error('- Error response:', errorBody);
-                  
-                  // Log specific error information
-                  if (errorBody.error) {
-                    console.error('- Error message:', errorBody.error);
-                    console.error('- Error description:', errorBody.error_description);
-                  }
-                } catch (e) {
-                  console.error('- Raw error response:', text);
-                }
-              }).catch(err => {
-                console.error('- Failed to parse error body:', err);
-              });
-            }
-          }
-        }
-        return response;
-      }).catch(error => {
-        console.error(`Supabase fetch error:`, error);
-        throw error;
-      });
-    }
   }
 });
 
@@ -187,50 +117,46 @@ export const testSupabaseConnection = async () => {
   }
   
   try {
-    // First test a simple health check
     console.log('Attempting to connect to Supabase...');
-    const { data: healthData, error: healthError } = await supabase.from('_test_connection_').select('*').limit(1);
     
-    if (healthError) {
-      console.log('Initial connection test error:', healthError);
-      // This is expected since the table doesn't exist, but we want to check if we can reach the API
+    // Directly test with the syllabi table
+    const { data, error } = await supabase
+      .from('syllabi')
+      .select('*')
+      .limit(1);
+    
+    if (error) {
+      console.error('Error accessing syllabi table:', error);
       
-      // Check if this is a 404 error (table not found) which is actually good
-      const isTableNotFoundError = healthError.message?.includes('does not exist') || healthError.code === '42P01';
+      // Check if this is a table not found error
+      const isTableMissing = error.message?.includes('does not exist') || error.code === '42P01';
       
-      if (isTableNotFoundError) {
-        console.log('Connection successful (404 error is expected for non-existent test table)');
-        
-        // Now try to access a real table
-        console.log('Trying to access syllabi table...');
-        const { data, error } = await supabase.from('syllabi').select('count', { count: 'exact' }).limit(1);
-        
-        if (error) {
-          console.error('Syllabi table access failed:', error);
-          return { 
-            success: false, 
-            error,
-            message: 'Could connect to Supabase but couldn\'t access syllabi table',
-            tableMissing: error.code === '42P01',
-            envStatus
-          };
-        }
-        
-        console.log('Supabase connection and syllabi table access successful!');
-        return { success: true, data };
+      if (isTableMissing) {
+        console.log('Connection successful but syllabi table does not exist');
+        return { 
+          success: true, 
+          message: 'Successfully connected to Supabase (syllabi table not found)',
+          tableMissing: true,
+          envStatus
+        };
       }
       
       // If we get here, there was a real connection error
       return { 
         success: false, 
-        error: healthError,
+        error,
         message: 'Failed to connect to Supabase API',
         envStatus
       };
     }
     
-    console.log('Supabase connection successful');
-    return { success: true, data: healthData };
+    console.log('Successfully connected to Supabase and accessed syllabi table');
+    return { 
+      success: true, 
+      data,
+      message: 'Successfully connected to Supabase',
+      envStatus
+    };
   } catch (error) {
     console.error('Error testing Supabase connection:', error);
     return { 
@@ -244,111 +170,88 @@ export const testSupabaseConnection = async () => {
 
 // Create storage bucket if it doesn't exist with better error handling
 export const ensureBucketExists = async (bucketName = 'syllabi') => {
-  console.log(`Ensuring bucket '${bucketName}' exists...`);
+  console.log(`[ensureBucketExists] Starting bucket check for '${bucketName}'`);
   
   if (!envStatus.hasUrl || !envStatus.hasAnonKey) {
-    console.error('Cannot create bucket: Missing required environment variables');
+    const errorMsg = 'Missing required Supabase environment variables';
+    console.error(errorMsg);
     return { 
       success: false, 
-      error: 'Missing Supabase credentials in environment variables',
+      error: new Error(errorMsg),
+      message: errorMsg,
       envStatus
     };
   }
-  
+
+  // First, try to interact with the bucket directly
   try {
-    // First check if bucket exists
-    console.log('Listing existing buckets...');
-    const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+    console.log(`[ensureBucketExists] Attempting to access bucket '${bucketName}'`);
     
-    if (listError) {
-      console.error('Error listing buckets:', listError);
+    // Try to list files in the bucket
+    const { data: files, error: listError } = await supabase.storage
+      .from(bucketName)
+      .list();
+    
+    // If we get here, the bucket exists and we can access it
+    if (!listError) {
+      console.log(`[ensureBucketExists] Successfully accessed bucket '${bucketName}'`);
       return { 
-        success: false, 
-        error: listError,
-        message: 'Failed to list storage buckets',
-        envStatus
+        success: true, 
+        message: `Bucket '${bucketName}' is accessible`,
+        bucketExists: true
       };
     }
-    
-    console.log('Current buckets:', buckets?.map(b => b.name).join(', ') || 'none');
-    
-    const bucketExists = buckets?.some(bucket => bucket.name === bucketName);
-    
-    if (!bucketExists) {
-      console.log(`Bucket '${bucketName}' not found, creating it now...`);
+
+    // If we get a 404 or similar error, the bucket doesn't exist yet
+    if (listError.message.includes('not found') || listError.message.includes('404') || listError.message.includes('does not exist')) {
+      console.log(`[ensureBucketExists] Bucket '${bucketName}' not found, creating...`);
+      
       try {
-        const { data, error } = await supabase.storage.createBucket(bucketName, {
+        // Create the bucket
+        const { error: createError } = await supabase.storage.createBucket(bucketName, {
           public: false,
-          allowedMimeTypes: ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain'],
+          allowedMimeTypes: [
+            'application/pdf', 
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 
+            'text/plain'
+          ],
           fileSizeLimit: 10485760, // 10MB
         });
+
+        if (createError) throw createError;
         
-        if (error) {
-          console.error(`Error creating bucket ${bucketName}:`, error);
-          return { 
-            success: false, 
-            error,
-            message: `Failed to create bucket '${bucketName}'`,
-            envStatus
-          };
-        }
-        
-        console.log(`Bucket '${bucketName}' created successfully`);
-      } catch (bucketError) {
-        console.error('Exception creating bucket:', bucketError);
+        console.log(`[ensureBucketExists] Successfully created bucket '${bucketName}'`);
+        return { 
+          success: true, 
+          message: `Created and accessed bucket '${bucketName}'`,
+          bucketCreated: true
+        };
+      } catch (createError) {
+        const error = createError as Error;
+        console.error(`[ensureBucketExists] Error creating bucket '${bucketName}':`, error);
         return {
           success: false,
-          error: bucketError,
-          message: `Exception occurred creating bucket '${bucketName}'`
+          error,
+          message: `Failed to create bucket: ${error.message}`
         };
       }
-    } else {
-      console.log(`Bucket '${bucketName}' already exists`);
     }
 
-    // Always double-check that we can upload to the bucket
-    console.log('Testing bucket permissions...');
-    const testContent = new Blob(['test content'], { type: 'text/plain' });
-    const testFile = new File([testContent], '_test_permission.txt');
-
-    try {
-      const { error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload('_test_permission.txt', testFile, { upsert: true });
-
-      if (uploadError) {
-        console.error('Permission test upload failed:', uploadError);
-        return {
-          success: false,
-          error: uploadError,
-          message: 'Bucket exists but upload test failed - check RLS policies'
-        };
-      }
-
-      console.log('Permission test successful');
-
-      // Clean up the test file
-      await supabase.storage
-        .from(bucketName)
-        .remove(['_test_permission.txt']);
-      
-      console.log('Bucket setup complete and working correctly');
-      return { success: true };
-    } catch (permError) {
-      console.error('Upload test error:', permError);
-      return {
-        success: false,
-        error: permError,
-        message: 'Bucket exists but testing upload permissions failed'
-      };
-    }
+    // If we get here, there was some other error
+    console.error(`[ensureBucketExists] Error accessing bucket '${bucketName}':`, listError);
+    return {
+      success: false,
+      error: listError,
+      message: `Error accessing bucket: ${listError.message}`
+    };
+    
   } catch (error) {
-    console.error(`Error ensuring bucket ${bucketName} exists:`, error);
-    return { 
-      success: false, 
-      error,
-      message: `Exception while ensuring bucket '${bucketName}' exists`,
-      envStatus
+    const err = error as Error;
+    console.error(`[ensureBucketExists] Unexpected error with bucket '${bucketName}':`, err);
+    return {
+      success: false,
+      error: err,
+      message: `Unexpected error: ${err.message}`
     };
   }
 };
@@ -403,6 +306,204 @@ export const signOut = async () => {
   } catch (error) {
     console.error('Error signing out:', error);
     return { success: false, error };
+  }
+};
+
+/**
+ * Check if a bucket exists and is accessible
+ */
+export const checkBucketAccess = async (bucketName = 'syllabi') => {
+  try {
+    console.log(`[checkBucketAccess] Checking access to bucket '${bucketName}'`);
+    
+    // Try to get the bucket info directly
+    const { data: bucketInfo, error: bucketError } = await supabase
+      .storage
+      .getBucket(bucketName);
+
+    // If we get here and no error, the bucket exists
+    if (!bucketError && bucketInfo) {
+      console.log(`[checkBucketAccess] Bucket '${bucketName}' is accessible`);
+      return { 
+        success: true, 
+        exists: true,
+        message: `Bucket '${bucketName}' is accessible`
+      };
+    }
+
+    // If we get a 404 or similar, the bucket doesn't exist
+    const statusCode = (bucketError as any)?.statusCode;
+    if (statusCode === 404 || bucketError?.message?.includes('not found')) {
+      console.log(`[checkBucketAccess] Bucket '${bucketName}' does not exist`);
+      return { 
+        success: true, 
+        exists: false,
+        message: `Bucket '${bucketName}' does not exist`
+      };
+    }
+
+    // For any other error, throw it
+    throw bucketError;
+  } catch (error) {
+    const err = error as Error;
+    console.error(`[checkBucketAccess] Error checking bucket '${bucketName}':`, err);
+    return { 
+      success: false, 
+      error: err,
+      message: `Error checking bucket access: ${err.message}`,
+      exists: false
+    };
+  }
+};
+
+/**
+ * Create the syllabi bucket with appropriate settings
+ */
+export const createSyllabiBucket = async () => {
+  const bucketName = 'syllabi';
+  try {
+    console.log(`[createSyllabiBucket] Attempting to create bucket '${bucketName}'`);
+    
+    // First check if bucket exists
+    const { data: bucketExists } = await supabase.storage.getBucket(bucketName);
+    if (bucketExists) {
+      console.log(`[createSyllabiBucket] Bucket '${bucketName}' already exists`);
+      return { 
+        success: true, 
+        message: `Bucket '${bucketName}' already exists`,
+        bucketCreated: false
+      };
+    }
+
+    // Create the bucket with all required options
+    const { error } = await supabase.storage.createBucket(bucketName, {
+      public: false,
+      allowedMimeTypes: [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain'
+      ],
+      fileSizeLimit: '10MB'
+    });
+
+    if (error) {
+      // If the error is that the bucket already exists (race condition), that's fine
+      if (error.message.includes('already exists')) {
+        console.log(`[createSyllabiBucket] Bucket '${bucketName}' already exists (race condition)`);
+        return { 
+          success: true, 
+          message: `Bucket '${bucketName}' already exists`,
+          bucketCreated: false
+        };
+      }
+      throw error;
+    }
+
+    console.log(`[createSyllabiBucket] Successfully created bucket '${bucketName}'`);
+    return { 
+      success: true, 
+      message: `Created bucket '${bucketName}'`,
+      bucketCreated: true
+    };
+  } catch (error) {
+    const err = error as Error;
+    console.error(`[createSyllabiBucket] Error creating bucket '${bucketName}':`, err);
+    return { 
+      success: false, 
+      error: err,
+      message: `Failed to create bucket: ${err.message}`,
+      bucketCreated: false
+    };
+  }
+};
+
+/**
+ * Simplified function to ensure the bucket exists
+ */
+export const ensureSyllabiBucket = async () => {
+  const bucketName = 'syllabi';
+  try {
+    // First ensure user is authenticated
+    const authCheck = await ensureAuthenticated();
+    if (!authCheck.authenticated) {
+      console.error('User not authenticated for bucket operations');
+      return { 
+        success: false, 
+        message: 'Authentication required for storage operations',
+        error: new Error('Not authenticated')
+      };
+    }
+
+    console.log(`[ensureSyllabiBucket] Checking if bucket '${bucketName}' exists`);
+    
+    // Try to test bucket access by attempting to list files (this doesn't require bucket creation permissions)
+    const { data: files, error: listError } = await supabase.storage
+      .from(bucketName)
+      .list('', { limit: 1 });
+    
+    if (!listError) {
+      console.log(`[ensureSyllabiBucket] Bucket '${bucketName}' exists and is accessible`);
+      return { 
+        success: true, 
+        bucketExists: true, 
+        message: `Bucket '${bucketName}' exists and is accessible`,
+        bucketCreated: false
+      };
+    }
+    
+    // If we get a "not found" error, the bucket doesn't exist
+    if (listError.message.includes('not found') || listError.message.includes('does not exist')) {
+      console.error(`[ensureSyllabiBucket] Bucket '${bucketName}' does not exist. Please create it in the Supabase Dashboard.`);
+      return { 
+        success: false, 
+        error: listError,
+        message: `Bucket '${bucketName}' does not exist. Please create it manually in the Supabase Dashboard under Storage > Create new bucket.`
+      };
+    }
+    
+    // For any other error, log it and return failure
+    console.error(`[ensureSyllabiBucket] Error accessing bucket:`, listError);
+    return { 
+      success: false, 
+      error: listError,
+      message: `Error accessing bucket: ${listError.message}`
+    };
+    
+  } catch (error) {
+    const err = error as Error;
+    console.error('Error in ensureSyllabiBucket:', err);
+    return { 
+      success: false, 
+      error: err,
+      message: `Failed to check bucket: ${err.message}`
+    };
+  }
+};
+
+/**
+ * Initialize the database schema and RLS policies
+ * This should be called once during app initialization
+ */
+export const initializeDatabase = async () => {
+  try {
+    console.log('Initializing database schema...');
+    
+    // Create syllabi table if it doesn't exist
+    const { data: tableData, error: tableError } = await supabase.rpc('create_schema_if_not_exists');
+    
+    if (tableError) {
+      console.error('Error creating schema:', tableError);
+      throw tableError;
+    }
+    
+    console.log('Database schema initialized successfully');
+    return { success: true };
+  } catch (error) {
+    console.error('Error initializing database:', error);
+    return { 
+      success: false, 
+      error: error instanceof Error ? error : new Error('Failed to initialize database') 
+    };
   }
 };
 
