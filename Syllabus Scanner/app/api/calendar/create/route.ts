@@ -6,7 +6,7 @@ import { refreshAccessToken } from "@/lib/google-auth"
 export async function POST(request: NextRequest) {
   try {
     // Get the access token from cookies - using cookies API safely
-    const cookieStore = cookies()
+    const cookieStore = await cookies()
     let accessToken = null
     
     try {

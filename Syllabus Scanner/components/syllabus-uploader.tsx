@@ -456,6 +456,16 @@ export function SyllabusUploader() {
       default:
         return (
           <div className="space-y-4">
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">
+                  Upload Files
+                </h2>
+                <p className="text-gray-600 dark:text-gray-400 mb-4">
+                  Upload your syllabi in PDF, Word, or text format.
+                </p>
+              </div>
+            </div>
             <div className="grid gap-4">
               <Card className="border-dashed border-2 hover:border-primary/50 transition-colors">
                 <CardContent className="p-6 flex flex-col items-center justify-center">

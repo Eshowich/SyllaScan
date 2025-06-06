@@ -5,7 +5,7 @@ export interface ExtractedEvent {
   endDate?: string;
   description?: string;
   location?: string;
-  eventType: 'lecture' | 'homework' | 'exam' | 'project' | 'officeHours' | 'other';
+  eventType: 'lecture' | 'homework' | 'exam' | 'quiz' | 'project' | 'officeHours' | 'other';
   confidence?: number; // AI confidence score
   approved?: boolean; // User approval status
 }

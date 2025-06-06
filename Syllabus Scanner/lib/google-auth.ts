@@ -1,5 +1,3 @@
-"use server"
-
 import { google } from "googleapis"
 import { cookies } from "next/headers"
 

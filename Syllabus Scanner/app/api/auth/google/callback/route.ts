@@ -1,60 +1,46 @@
+import { NextRequest, NextResponse } from "next/server"
+import { getTokens } from "@/lib/google-auth"
 import { cookies } from "next/headers"
-import { NextResponse } from "next/server"
-import { getTokens, setCredentials, getUserInfo } from "@/lib/google-auth"
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
   try {
-    // Get the authorization code from the URL
-    const url = new URL(request.url)
-    const code = url.searchParams.get("code")
-    const state = url.searchParams.get("state") || ""
-    const error = url.searchParams.get("error")
+    const searchParams = request.nextUrl.searchParams
+    const code = searchParams.get("code")
+    const error = searchParams.get("error")
 
-    // Handle error from Google
     if (error) {
-      return NextResponse.redirect(new URL(`/auth/error?error=${error}`, url.origin))
+      console.error("OAuth error:", error)
+      return NextResponse.redirect(new URL(`/upload?error=${encodeURIComponent(error)}`, request.url))
     }
 
     if (!code) {
-      return NextResponse.redirect(new URL("/auth/error?error=no_code", url.origin))
+      return NextResponse.redirect(new URL("/upload?error=no_code", request.url))
     }
 
-    // Exchange the code for tokens
+    // Exchange code for tokens
     const tokenResult = await getTokens(code)
-
+    
     if (!tokenResult.success) {
-      return NextResponse.redirect(
-        new URL(`/auth/error?error=token_exchange_failed&message=${encodeURIComponent(tokenResult.error)}`, url.origin),
-      )
+      console.error("Token exchange failed:", tokenResult.error)
+      return NextResponse.redirect(new URL(`/upload?error=${encodeURIComponent(tokenResult.error)}`, request.url))
     }
 
-    const tokens = tokenResult.tokens
-
-    // Get the OAuth2 client with credentials
-    const oauth2Client = setCredentials(tokens)
-
-    // Get user info
-    const userInfoResult = await getUserInfo(oauth2Client)
-
-    if (!userInfoResult.success) {
-      return NextResponse.redirect(
-        new URL(`/auth/error?error=user_info_failed&message=${encodeURIComponent(userInfoResult.error)}`, url.origin),
-      )
+    // Store tokens in cookies
+    const cookieStore = await cookies()
+    
+    if (tokenResult.tokens.access_token) {
+      cookieStore.set("google_access_token", tokenResult.tokens.access_token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        maxAge: tokenResult.tokens.expiry_date 
+          ? Math.floor((tokenResult.tokens.expiry_date - Date.now()) / 1000)
+          : 3600,
+        path: "/",
+      })
     }
 
-    const userInfo = userInfoResult.data
-
-    // Store tokens in cookies (in a real app, you'd store these securely)
-    const cookieStore = cookies()
-    cookieStore.set("google_access_token", tokens.access_token || "", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      maxAge: tokens.expiry_date ? Math.floor((tokens.expiry_date - Date.now()) / 1000) : 3600,
-      path: "/",
-    })
-
-    if (tokens.refresh_token) {
-      cookieStore.set("google_refresh_token", tokens.refresh_token, {
+    if (tokenResult.tokens.refresh_token) {
+      cookieStore.set("google_refresh_token", tokenResult.tokens.refresh_token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === "production",
         maxAge: 60 * 60 * 24 * 30, // 30 days
@@ -62,32 +48,13 @@ export async function GET(request: Request) {
       })
     }
 
-    // Store user info in a cookie
-    cookieStore.set(
-      "user_info",
-      JSON.stringify({
-        email: userInfo.emailAddresses?.[0]?.value,
-        name: userInfo.names?.[0]?.displayName,
-        picture: userInfo.photos?.[0]?.url,
-      }),
-      {
-        httpOnly: false,
-        secure: process.env.NODE_ENV === "production",
-        maxAge: 60 * 60 * 24 * 30, // 30 days
-        path: "/",
-      },
-    )
-
-    // Redirect based on state parameter or default to calendar page
-    const redirectPath = state || "/calendar"
-    return NextResponse.redirect(new URL(redirectPath, url.origin))
+    console.log("✅ Google Calendar access granted successfully")
+    
+    // Redirect back to upload page with success
+    return NextResponse.redirect(new URL("/upload?calendar_connected=true", request.url))
+    
   } catch (error) {
-    console.error("Error handling Google OAuth callback:", error)
-    return NextResponse.redirect(
-      new URL(
-        `/auth/error?error=callback_failed&message=${encodeURIComponent(error.message || "Unknown error")}`,
-        request.url,
-      ),
-    )
+    console.error("OAuth callback error:", error)
+    return NextResponse.redirect(new URL(`/upload?error=${encodeURIComponent("callback_failed")}`, request.url))
   }
 }

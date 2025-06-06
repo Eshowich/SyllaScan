@@ -3,6 +3,16 @@ import { getOAuth2Client } from "@/lib/google-auth"
 
 export async function GET(request: NextRequest) {
   try {
+    // Check if Google OAuth is configured
+    const hasOAuthConfig = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
+    
+    if (!hasOAuthConfig) {
+      console.error("❌ Google OAuth not configured")
+      return NextResponse.json({ 
+        error: "Google OAuth credentials not configured. Please add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your .env.local file." 
+      }, { status: 500 })
+    }
+
     const oauth2Client = getOAuth2Client()
     
     // Generate a unique state parameter for security
@@ -20,6 +30,8 @@ export async function GET(request: NextRequest) {
       prompt: "consent", // Force to get refresh token
       state: state // For security to prevent CSRF
     })
+    
+    console.log("✅ Generated auth URL successfully")
     
     return NextResponse.json({ 
       authUrl 

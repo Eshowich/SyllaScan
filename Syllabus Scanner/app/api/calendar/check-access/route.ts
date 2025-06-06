@@ -3,6 +3,17 @@ import { cookies } from "next/headers"
 
 export async function GET(request: NextRequest) {
   try {
+    // First check if Google OAuth is configured
+    const hasOAuthConfig = !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)
+    
+    if (!hasOAuthConfig) {
+      console.log("❌ Google OAuth not configured - missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET")
+      return NextResponse.json({ 
+        hasAccess: false,
+        error: "Google OAuth credentials not configured"
+      })
+    }
+
     // Get the access token from cookies - using await as required by Next.js
     const cookieStore = await cookies()
     
@@ -12,20 +23,26 @@ export async function GET(request: NextRequest) {
     
     try {
       accessToken = cookieStore.get("google_access_token")?.value
-      if (!accessToken) {
-        // If no access token, check if we have a refresh token
-        refreshToken = cookieStore.get("google_refresh_token")?.value
-      }
+      refreshToken = cookieStore.get("google_refresh_token")?.value
     } catch (cookieError) {
       console.error("Error accessing cookies:", cookieError)
     }
 
-    const hasAccess = !!accessToken || !!refreshToken
+    // Only consider having access if we have valid tokens AND OAuth is configured
+    const hasValidTokens = !!(accessToken || refreshToken)
+    const hasAccess = hasOAuthConfig && hasValidTokens
     
     // For debugging
-    console.log("Calendar access check:", { hasAccess, hasAccessToken: !!accessToken, hasRefreshToken: !!refreshToken })
+    console.log("Calendar access check:", { 
+      hasAccess, 
+      hasOAuthConfig,
+      hasAccessToken: !!accessToken, 
+      hasRefreshToken: !!refreshToken,
+      hasValidTokens,
+      accessTokenValue: accessToken ? 'present' : 'missing',
+      refreshTokenValue: refreshToken ? 'present' : 'missing'
+    })
     
-    // If we have an access token or refresh token, we consider that the user has granted access
     return NextResponse.json({ 
       hasAccess
     })

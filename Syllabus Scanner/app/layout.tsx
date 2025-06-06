@@ -5,6 +5,7 @@ import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { AuthProvider } from "@/hooks/use-auth"
 import { Toaster } from "@/components/ui/toaster"
+import { SharedHeader } from "@/components/shared-header"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -24,7 +25,12 @@ export default function RootLayout({
       <body className={inter.className} suppressHydrationWarning>
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
           <AuthProvider>
-            {children}
+            <div className="flex min-h-screen flex-col">
+              <SharedHeader />
+              <main className="flex-1">
+                {children}
+              </main>
+            </div>
             <Toaster />
           </AuthProvider>
         </ThemeProvider>
